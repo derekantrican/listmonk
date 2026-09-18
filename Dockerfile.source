@@ -1,0 +1,72 @@
+# Builds listmonk entirely from source (email-builder + admin frontend + Go binary), mirroring
+# `make dist`. The regular Dockerfile only packages a prebuilt binary (used by the release
+# pipeline), so use this one to deploy a fork, e.g. on Railway by setting
+# RAILWAY_DOCKERFILE_PATH=Dockerfile.source.
+
+# --- Stage 1: JS frontends (email-builder, then the admin app that loads it). ---
+FROM node:22 AS frontend
+WORKDIR /app
+
+# The admin app's postinstall copies altcha into ../static.
+COPY static static
+
+# Install deps first so they are cached until the manifests change.
+COPY frontend/email-builder/package.json frontend/email-builder/yarn.lock frontend/email-builder/
+RUN cd frontend/email-builder && yarn install --frozen-lockfile
+COPY frontend/package.json frontend/yarn.lock frontend/
+RUN cd frontend && yarn install --frozen-lockfile
+
+COPY frontend frontend
+
+# Build the visual editor and place it where the admin app serves it from.
+RUN cd frontend/email-builder && yarn build \
+    && mkdir -p ../public/static/email-builder \
+    && cp -r dist/* ../public/static/email-builder/
+
+# Call vite directly: `yarn build` first runs eslint with `--ignore-path .gitignore`, and
+# .dockerignore excludes .gitignore from the build context. Linting isn't needed for a deploy.
+ARG VERSION=v0.0.0-source
+RUN cd frontend && VUE_APP_VERSION="${VERSION}" yarn vite build
+
+# --- Stage 2: Go binary, with the static assets packed in via stuffbin. ---
+FROM golang:1.26 AS backend
+WORKDIR /app
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+COPY --from=frontend /app/frontend/dist frontend/dist
+COPY --from=frontend /app/static/public/static/altcha.umd.js static/public/static/altcha.umd.js
+
+ARG VERSION=v0.0.0-source
+ENV CGO_ENABLED=0
+RUN go build -o listmonk \
+    -ldflags="-s -w -X 'main.buildString=${VERSION} (source build)' -X 'main.versionString=${VERSION}'" \
+    ./cmd
+
+# Keep this list in sync with STATIC in the Makefile.
+RUN go run github.com/knadh/stuffbin/stuffbin -a stuff -in listmonk -out listmonk \
+    config.toml.sample \
+    schema.sql queries:/queries permissions.json \
+    static/public:/public \
+    static/email-templates \
+    frontend/dist:/admin \
+    i18n:/i18n
+
+# --- Stage 3: runtime image, same as the regular Dockerfile. ---
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates tzdata shadow su-exec
+
+WORKDIR /listmonk
+
+COPY --from=backend /app/listmonk .
+COPY config.toml.sample config.toml
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+EXPOSE 9000
+
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["./listmonk"]
