@@ -20,6 +20,14 @@ type pipe struct {
 	stopped    atomic.Bool
 	withErrors atomic.Bool
 
+	// firstID is the lowest subscriber ID fetched in this run, used to roll
+	// back the campaign checkpoint when no message in the run was sent.
+	firstID atomic.Uint64
+
+	// quota is set when the campaign stopped on a used-up sending quota.
+	quota    *quotaError
+	quotaMut sync.Mutex
+
 	m *Manager
 }
 
@@ -79,6 +87,12 @@ func (m *Manager) newPipe(c *models.Campaign) (*pipe, error) {
 // in the current batch or not. A false indicates that all subscribers
 // have been processed, or that a campaign has been paused or cancelled.
 func (p *pipe) NextSubscribers() (bool, error) {
+	// The pipe was stopped (eg: on errors) while its DB status is still
+	// 'running'. Don't fetch more subscribers only to discard them.
+	if p.stopped.Load() {
+		return false, nil
+	}
+
 	// Fetch the next batch of subscribers from a 'running' campaign.
 	subs, err := p.m.store.NextSubscribers(p.camp.ID, p.m.cfg.BatchSize)
 	if err != nil {
@@ -91,6 +105,9 @@ func (p *pipe) NextSubscribers() (bool, error) {
 		return false, nil
 	}
 
+	// Subscribers are fetched in ascending ID order.
+	p.firstID.CompareAndSwap(0, uint64(subs[0].ID))
+
 	// Is there a sliding window limit configured?
 	hasSliding := p.m.cfg.SlidingWindow &&
 		p.m.cfg.SlidingWindowRate > 0 &&
@@ -98,6 +115,13 @@ func (p *pipe) NextSubscribers() (bool, error) {
 
 	// Push messages.
 	for _, s := range subs {
+		// Stop queueing the rest of the batch once the pipe is stopped. The
+		// worker would discard them, but they'd still count towards (and
+		// could sleep on) the sliding window.
+		if p.stopped.Load() {
+			break
+		}
+
 		msg, err := p.newMessage(s)
 		if err != nil {
 			p.m.log.Printf("error rendering message (%s) (%s): %v", p.camp.Name, s.Email, err)
@@ -155,6 +179,20 @@ func (p *pipe) OnError() {
 	p.m.log.Printf("error count exceeded %d. pausing campaign %s", p.m.cfg.MaxSendErrors, p.camp.Name)
 }
 
+// OnQuotaExceeded stops the campaign when the messenger reports that the
+// provider's sending quota is used up. On cleanup, the campaign is deferred
+// until the quota resets, or paused if the reset time is unknown.
+func (p *pipe) OnQuotaExceeded(q quotaError) {
+	p.quotaMut.Lock()
+	if p.quota == nil {
+		p.quota = &q
+		p.m.log.Printf("%s. stopping campaign %s", q, p.camp.Name)
+	}
+	p.quotaMut.Unlock()
+
+	p.Stop(true)
+}
+
 // Stop "marks" a campaign as stopped. It doesn't actually stop the processing
 // of messages. That happens when every queued message in the campaign is processed,
 // marking .wg, the waitgroup counter as done. That triggers cleanup().
@@ -196,22 +234,49 @@ func (p *pipe) cleanup() {
 		p.m.pipesMut.Unlock()
 	}()
 
+	// Checkpoint the campaign at the last sent subscriber. Fetching a batch
+	// moves the DB checkpoint to the end of that batch, so if nothing in this
+	// run was sent, roll it back to just before the run's first subscriber so
+	// that resuming doesn't skip the unsent batch.
+	lastID := int(p.lastID.Load())
+	if lastID == 0 {
+		// -1 leaves the checkpoint unchanged when no subscribers were fetched.
+		lastID = int(p.firstID.Load()) - 1
+	}
+
 	// Update campaign's 'sent count.
-	if err := p.m.store.UpdateCampaignCounts(p.camp.ID, 0, int(p.sent.Load()), int(p.lastID.Load())); err != nil {
+	if err := p.m.store.UpdateCampaignCounts(p.camp.ID, 0, int(p.sent.Load()), lastID); err != nil {
 		p.m.log.Printf("error updating campaign counts (%s): %v", p.camp.Name, err)
 	}
 
-	// The campaign was auto-paused due to errors.
+	// The campaign was auto-paused due to errors or a used-up sending quota.
 	if p.withErrors.Load() {
+		reason := "Too many errors"
+
+		p.quotaMut.Lock()
+		quota := p.quota
+		p.quotaMut.Unlock()
+		if quota != nil {
+			// Resume after the quota resets, if possible.
+			if p.deferCampaign(*quota) {
+				return
+			}
+			reason = quota.String()
+		}
+
+		p.m.clearDeferrals(p.camp.ID)
 		if err := p.m.store.UpdateCampaignStatus(p.camp.ID, models.CampaignStatusPaused); err != nil {
 			p.m.log.Printf("error updating campaign (%s) status to %s: %v", p.camp.Name, models.CampaignStatusPaused, err)
 		} else {
 			p.m.log.Printf("set campaign (%s) to %s", p.camp.Name, models.CampaignStatusPaused)
 		}
 
-		_ = p.m.sendNotif(p.camp, models.CampaignStatusPaused, "Too many errors")
+		_ = p.m.sendNotif(p.camp, models.CampaignStatusPaused, reason)
 		return
 	}
+
+	// The campaign wasn't stopped by a quota, so any deferral streak is over.
+	p.m.clearDeferrals(p.camp.ID)
 
 	// The campaign was manually stopped (pause, cancel).
 	if p.stopped.Load() {

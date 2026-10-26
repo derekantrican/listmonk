@@ -55,6 +55,7 @@ type Store interface {
 	GetMediaURLByFilename(filename string) (string, error)
 	UpdateCampaignStatus(campID int, status string) error
 	UpdateCampaignCounts(campID int, toSend int, sent int, lastSubID int) error
+	DeferCampaign(campID int, sendAt time.Time) error
 	CreateLink(url string) (string, error)
 	BlocklistSubscriber(id int64) error
 	DeleteSubscriber(id int64) error
@@ -106,6 +107,11 @@ type Manager struct {
 	// sending further messages.
 	slidingCount int
 	slidingStart time.Time
+
+	// Consecutive quota deferrals per campaign ID with no successful send in
+	// between. Kept in memory only, so a restart resets the count.
+	deferrals    map[int]int
+	deferralsMut sync.Mutex
 
 	tplFuncs template.FuncMap
 }
@@ -187,6 +193,7 @@ func New(cfg Config, store Store, i *i18n.I18n, l *log.Logger) *Manager {
 		pipes:        make(map[int]*pipe),
 		tpls:         make(map[int]*models.Template),
 		links:        make(map[string]string),
+		deferrals:    make(map[int]int),
 		nextPipes:    make(chan *pipe, 1000),
 		campMsgQ:     make(chan CampaignMessage, cfg.Concurrency*cfg.MessageRate*2),
 		msgQ:         make(chan models.Message, cfg.Concurrency*cfg.MessageRate*2),
@@ -556,7 +563,11 @@ func (m *Manager) worker() {
 				// Mark the message as done.
 				msg.pipe.wg.Done()
 
-				if err != nil {
+				if q, ok := parseQuotaError(err); ok {
+					// The provider's sending quota is used up. Every further
+					// send would fail too, so stop the campaign right away.
+					msg.pipe.OnQuotaExceeded(q)
+				} else if err != nil {
 					// Call the error callback, which keeps track of the error count
 					// and stops the campaign if the error count exceeds the threshold.
 					msg.pipe.OnError()

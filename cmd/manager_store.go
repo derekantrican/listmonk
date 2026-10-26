@@ -1,6 +1,8 @@
 package main
 
 import (
+	"time"
+
 	"github.com/gofrs/uuid/v5"
 	"github.com/knadh/listmonk/internal/core"
 	"github.com/knadh/listmonk/internal/manager"
@@ -82,6 +84,12 @@ func (s *store) UpdateCampaignStatus(campID int, status string) error {
 // UpdateCampaignCounts updates a campaign's status.
 func (s *store) UpdateCampaignCounts(campID int, toSend int, sent int, lastSubID int) error {
 	_, err := s.queries.UpdateCampaignCounts.Exec(campID, toSend, sent, lastSubID)
+	return err
+}
+
+// DeferCampaign reschedules a campaign to resume sending at sendAt.
+func (s *store) DeferCampaign(campID int, sendAt time.Time) error {
+	_, err := s.queries.DeferCampaign.Exec(campID, sendAt)
 	return err
 }
 

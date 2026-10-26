@@ -436,9 +436,15 @@ INSERT INTO campaign_lists (campaign_id, list_id, list_name)
 UPDATE campaigns SET
     to_send=(CASE WHEN $2 != 0 THEN $2 ELSE to_send END),
     sent=sent+$3,
-    last_subscriber_id=(CASE WHEN $4 > 0 THEN $4 ELSE last_subscriber_id END),
+    -- A negative last_subscriber_id leaves the checkpoint unchanged.
+    last_subscriber_id=(CASE WHEN $4 >= 0 THEN $4 ELSE last_subscriber_id END),
     updated_at=NOW()
 WHERE id=$1;
+
+-- name: defer-campaign
+-- Reschedules a campaign (eg: one that stopped on a used-up sending quota) to
+-- resume at $2. The scanner picks up 'scheduled' campaigns once send_at passes.
+UPDATE campaigns SET status='scheduled', send_at=$2, updated_at=NOW() WHERE id=$1;
 
 -- name: update-campaign-status
 UPDATE campaigns SET
