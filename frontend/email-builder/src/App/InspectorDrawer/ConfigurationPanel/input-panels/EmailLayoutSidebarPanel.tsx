@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 
-import { RoundedCornerOutlined } from '@mui/icons-material';
+import { RoundedCornerOutlined, WidthWideOutlined } from '@mui/icons-material';
 
 import EmailLayoutPropsSchema, {
+  DEFAULT_CANVAS_MAX_WIDTH,
   EmailLayoutProps,
 } from '../../../../documents/blocks/EmailLayout/EmailLayoutPropsSchema';
 
@@ -46,6 +47,16 @@ export default function EmailLayoutSidebarFields({ data, setData }: EmailLayoutS
         label="Canvas border color"
         defaultValue={data.borderColor ?? null}
         onChange={(borderColor) => updateData({ ...data, borderColor })}
+      />
+      <SliderInput
+        iconLabel={<WidthWideOutlined />}
+        units="px"
+        step={20}
+        min={DEFAULT_CANVAS_MAX_WIDTH}
+        max={960}
+        label="Canvas max width"
+        defaultValue={data.maxWidth ?? DEFAULT_CANVAS_MAX_WIDTH}
+        onChange={(maxWidth) => updateData({ ...data, maxWidth })}
       />
       <SliderInput
         iconLabel={<RoundedCornerOutlined />}

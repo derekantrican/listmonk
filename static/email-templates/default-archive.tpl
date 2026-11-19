@@ -32,7 +32,7 @@
             .wrap {
                 background-color: #fff;
                 padding: 30px;
-                max-width: 525px;
+                max-width: 700px;
                 margin: 0 auto;
                 border-radius: 5px;
             }
@@ -87,7 +87,7 @@
     </head>
 <body style="background-color: #F0F1F3;font-family: 'Helvetica Neue', 'Segoe UI', Helvetica, sans-serif;font-size: 15px;line-height: 26px;margin: 0;color: #444;">
     <div class="gutter" style="padding: 30px;">&nbsp;</div>
-    <div class="wrap" style="background-color: #fff;padding: 30px;max-width: 525px;margin: 0 auto;border-radius: 5px;">
+    <div class="wrap" style="background-color: #fff;padding: 30px;max-width: 700px;margin: 0 auto;border-radius: 5px;">
         {{ template "content" . }}
     </div>
     
