@@ -25,6 +25,8 @@ const EmailLayoutPropsSchema = z.object({
   backdropColor: COLOR_SCHEMA,
   borderColor: COLOR_SCHEMA,
   borderRadius: z.number().optional().nullable(),
+  // Max width (px) of the content canvas. Defaults to DEFAULT_CANVAS_MAX_WIDTH.
+  maxWidth: z.number().optional().nullable(),
   canvasColor: COLOR_SCHEMA,
   textColor: COLOR_SCHEMA,
   fontFamily: FONT_FAMILY_SCHEMA,
@@ -33,6 +35,9 @@ const EmailLayoutPropsSchema = z.object({
   // Element (h1, p, ul...) -> inline CSS declarations applied to rendered Markdown.
   markdownStyles: z.record(z.string(), z.string()).optional().nullable(),
 });
+
+// The upstream @usewaypoint/email-builder renderer hardcodes this canvas width.
+export const DEFAULT_CANVAS_MAX_WIDTH = 600;
 
 export default EmailLayoutPropsSchema;
 

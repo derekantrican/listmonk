@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from '@usewaypoint/email-builder';
 import { TEditorConfiguration } from './documents/editor/core';
 import { setActiveMarkdownStyles, getActiveMarkdownStyles } from './documents/blocks/Text/markdownStyles';
 import { postProcessForOutlook } from './outlook';
+import { DEFAULT_CANVAS_MAX_WIDTH } from './documents/blocks/EmailLayout/EmailLayoutPropsSchema';
 
 const VIEWPORT_META = '<meta name="viewport" content="width=device-width, initial-scale=1.0">';
 const MSO_DOCUMENT_SETTINGS = '<!--[if mso]><noscript><xml xmlns:o="urn:schemas-microsoft-com:office:office"><o:OfficeDocumentSettings><o:AllowPNG/><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript><![endif]-->';
@@ -48,6 +49,18 @@ function collectImageEmbedURLs(document: TEditorConfiguration): string[] {
   return embedURLs;
 }
 
+function applyCanvasMaxWidth(html: string, maxWidth: unknown): string {
+  // The upstream renderer hardcodes `max-width:600px` on the canvas table (the
+  // first <table> in the output). Swap in the layout's configured width.
+  if (typeof maxWidth !== 'number' || !Number.isFinite(maxWidth) || maxWidth === DEFAULT_CANVAS_MAX_WIDTH) {
+    return html;
+  }
+
+  return html.replace(/<table\b[^>]*>/i, (tag) => (
+    tag.replace(`max-width:${DEFAULT_CANVAS_MAX_WIDTH}px`, `max-width:${Math.round(maxWidth)}px`)
+  ));
+}
+
 function applyImageEmbeds(html: string, embedURLs: string[]): string {
   let output = html;
 
@@ -76,6 +89,7 @@ export function renderHtmlWithMeta(
   } finally {
     setActiveMarkdownStyles(previousStyles);
   }
+  html = applyCanvasMaxWidth(html, root?.type === 'EmailLayout' ? root.data?.maxWidth : null);
   const rendered = options.outlook ? postProcessForOutlook(html) : html;
   const output = applyImageEmbeds(rendered, embedURLs);
   const head = options.outlook ? `${VIEWPORT_META}${MSO_DOCUMENT_SETTINGS}` : VIEWPORT_META;
